@@ -2,7 +2,7 @@ name: Build OpenWrt XR1710G
 
 on:
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 18 * * *"
   repository_dispatch:
     types:
       - openwrt-updated
@@ -49,27 +49,151 @@ permissions:
   contents: write
 
 concurrency:
-  group: openwrt-xr1710g-${{ github.ref }}-${{ inputs.openwrt_ref || 'xr1710g' }}
-  cancel-in-progress: true
+  group: openwrt-xr1710g-check-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
-  SOURCE_DIR: openwrt
   TARGET: airoha
   SUBTARGET: an7581
-  OPENWRT_REPO: ${{ inputs.openwrt_repo || 'https://github.com/YYH2913/openwrt.git' }}
-  OPENWRT_REF: ${{ inputs.openwrt_ref || 'xr1710g' }}
-  TARGET_PROFILE: ${{ inputs.target_profile || 'econet_xr1710g-ubi' }}
-  WIRELESS_COUNTRY_CODE: ${{ inputs.wireless_country || 'CN' }}
-  FIX_5G_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.fix_5g_channel) || 'true' }}
-  CREATE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.create_release) || 'true' }}
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 2G
 
 jobs:
-  build:
-    name: ${{ inputs.target_profile || 'econet_xr1710g-ubi' }} @ ${{ inputs.openwrt_ref || 'xr1710g' }}
+  check-upstream:
+    name: Check OpenWrt source
     runs-on: ubuntu-24.04
+    outputs:
+      should_build: ${{ steps.decision.outputs.should_build }}
+      skip_reason: ${{ steps.decision.outputs.skip_reason }}
+      openwrt_repo: ${{ steps.resolve.outputs.openwrt_repo }}
+      openwrt_ref: ${{ steps.resolve.outputs.openwrt_ref }}
+      target_profile: ${{ steps.resolve.outputs.target_profile }}
+      wireless_country: ${{ steps.resolve.outputs.wireless_country }}
+      fix_5g_channel: ${{ steps.resolve.outputs.fix_5g_channel }}
+      extra_config: ${{ steps.resolve.outputs.extra_config }}
+      create_release: ${{ steps.resolve.outputs.create_release }}
+      source_commit: ${{ steps.source.outputs.source_commit }}
+      source_short: ${{ steps.source.outputs.source_short }}
+      safe_ref: ${{ steps.source.outputs.safe_ref }}
+      release_tag: ${{ steps.source.outputs.release_tag }}
+
+    steps:
+      - name: Resolve build inputs
+        id: resolve
+        env:
+          INPUT_OPENWRT_REPO: ${{ inputs.openwrt_repo }}
+          INPUT_OPENWRT_REF: ${{ inputs.openwrt_ref }}
+          INPUT_TARGET_PROFILE: ${{ inputs.target_profile }}
+          INPUT_WIRELESS_COUNTRY: ${{ inputs.wireless_country }}
+          INPUT_FIX_5G_CHANNEL: ${{ inputs.fix_5g_channel }}
+          INPUT_EXTRA_CONFIG: ${{ inputs.extra_config }}
+          INPUT_CREATE_RELEASE: ${{ inputs.create_release }}
+          PAYLOAD_OPENWRT_REPO: ${{ github.event.client_payload.openwrt_repo }}
+          PAYLOAD_OPENWRT_REF: ${{ github.event.client_payload.openwrt_ref }}
+          PAYLOAD_TARGET_PROFILE: ${{ github.event.client_payload.target_profile }}
+          PAYLOAD_WIRELESS_COUNTRY: ${{ github.event.client_payload.wireless_country }}
+          PAYLOAD_FIX_5G_CHANNEL: ${{ github.event.client_payload.fix_5g_channel }}
+          PAYLOAD_EXTRA_CONFIG: ${{ github.event.client_payload.extra_config }}
+          PAYLOAD_CREATE_RELEASE: ${{ github.event.client_payload.create_release }}
+        run: |
+          set -eu
+          openwrt_repo="${INPUT_OPENWRT_REPO:-${PAYLOAD_OPENWRT_REPO:-https://github.com/YYH2913/openwrt.git}}"
+          openwrt_ref="${INPUT_OPENWRT_REF:-${PAYLOAD_OPENWRT_REF:-xr1710g}}"
+          target_profile="${INPUT_TARGET_PROFILE:-${PAYLOAD_TARGET_PROFILE:-econet_xr1710g-ubi}}"
+          wireless_country="${INPUT_WIRELESS_COUNTRY:-${PAYLOAD_WIRELESS_COUNTRY:-CN}}"
+          fix_5g_channel="${INPUT_FIX_5G_CHANNEL:-${PAYLOAD_FIX_5G_CHANNEL:-true}}"
+          extra_config="${INPUT_EXTRA_CONFIG:-${PAYLOAD_EXTRA_CONFIG:-}}"
+          create_release="${INPUT_CREATE_RELEASE:-${PAYLOAD_CREATE_RELEASE:-true}}"
+
+          {
+            printf 'openwrt_repo=%s\n' "${openwrt_repo}"
+            printf 'openwrt_ref=%s\n' "${openwrt_ref}"
+            printf 'target_profile=%s\n' "${target_profile}"
+            printf 'wireless_country=%s\n' "${wireless_country}"
+            printf 'fix_5g_channel=%s\n' "${fix_5g_channel}"
+            printf 'create_release=%s\n' "${create_release}"
+            printf 'extra_config<<__EXTRA_CONFIG__\n%s\n__EXTRA_CONFIG__\n' "${extra_config}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve OpenWrt commit
+        id: source
+        env:
+          OPENWRT_REPO: ${{ steps.resolve.outputs.openwrt_repo }}
+          OPENWRT_REF: ${{ steps.resolve.outputs.openwrt_ref }}
+        run: |
+          set -eux
+          mkdir -p source-probe
+          git -C source-probe init
+          git -C source-probe remote add origin "${OPENWRT_REPO}"
+          git -C source-probe fetch --depth 1 origin "${OPENWRT_REF}"
+          source_commit="$(git -C source-probe rev-parse FETCH_HEAD)"
+          source_short="$(printf '%s' "${source_commit}" | cut -c1-12)"
+          safe_ref="$(printf '%s' "${OPENWRT_REF}" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-//;s/-$//')"
+          if [ -z "${safe_ref}" ]; then
+            safe_ref="${source_short}"
+          fi
+          release_tag="xr1710g-${safe_ref}-${source_short}"
+
+          {
+            printf 'source_commit=%s\n' "${source_commit}"
+            printf 'source_short=%s\n' "${source_short}"
+            printf 'safe_ref=%s\n' "${safe_ref}"
+            printf 'release_tag=%s\n' "${release_tag}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to build
+        id: decision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.source.outputs.release_tag }}
+        run: |
+          set -eu
+          should_build=true
+          skip_reason=""
+
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ] && gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            should_build=false
+            skip_reason="Release ${RELEASE_TAG} already exists; upstream source has not changed."
+          fi
+
+          printf 'should_build=%s\n' "${should_build}" >> "$GITHUB_OUTPUT"
+          printf 'skip_reason=%s\n' "${skip_reason}" >> "$GITHUB_OUTPUT"
+          if [ "${should_build}" = "true" ]; then
+            echo "Building ${RELEASE_TAG}"
+          else
+            echo "${skip_reason}"
+          fi
+
+  skipped:
+    name: Skip unchanged upstream
+    runs-on: ubuntu-24.04
+    needs: check-upstream
+    if: ${{ needs.check-upstream.outputs.should_build != 'true' }}
+    steps:
+      - name: Report skip
+        run: echo "${{ needs.check-upstream.outputs.skip_reason }}"
+
+  build:
+    name: Build ${{ needs.check-upstream.outputs.target_profile }} @ ${{ needs.check-upstream.outputs.openwrt_ref }}
+    runs-on: ubuntu-24.04
+    needs: check-upstream
+    if: ${{ needs.check-upstream.outputs.should_build == 'true' }}
     timeout-minutes: 720
+    concurrency:
+      group: openwrt-xr1710g-build
+      cancel-in-progress: false
+    env:
+      SOURCE_DIR: openwrt
+      OPENWRT_REPO: ${{ needs.check-upstream.outputs.openwrt_repo }}
+      OPENWRT_REF: ${{ needs.check-upstream.outputs.openwrt_ref }}
+      OPENWRT_SOURCE_COMMIT: ${{ needs.check-upstream.outputs.source_commit }}
+      OPENWRT_SOURCE_SHORT: ${{ needs.check-upstream.outputs.source_short }}
+      RELEASE_TAG: ${{ needs.check-upstream.outputs.release_tag }}
+      TARGET_PROFILE: ${{ needs.check-upstream.outputs.target_profile }}
+      WIRELESS_COUNTRY_CODE: ${{ needs.check-upstream.outputs.wireless_country }}
+      FIX_5G_CHANNEL: ${{ needs.check-upstream.outputs.fix_5g_channel }}
+      EXTRA_CONFIG: ${{ needs.check-upstream.outputs.extra_config }}
+      CREATE_RELEASE: ${{ needs.check-upstream.outputs.create_release }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
 
     steps:
       - name: Checkout this repository
@@ -102,8 +226,9 @@ jobs:
           mkdir -p "${SOURCE_DIR}"
           git -C "${SOURCE_DIR}" init
           git -C "${SOURCE_DIR}" remote add origin "${OPENWRT_REPO}"
-          git -C "${SOURCE_DIR}" fetch --depth 1 origin "${OPENWRT_REF}"
-          git -C "${SOURCE_DIR}" checkout --force FETCH_HEAD
+          git -C "${SOURCE_DIR}" fetch --depth 1 origin "${OPENWRT_SOURCE_COMMIT}" || \
+            git -C "${SOURCE_DIR}" fetch --depth 1 origin "${OPENWRT_REF}"
+          git -C "${SOURCE_DIR}" checkout --force "${OPENWRT_SOURCE_COMMIT}"
           git -C "${SOURCE_DIR}" log -1 --oneline
 
       - name: Restore downloads and ccache
@@ -112,9 +237,9 @@ jobs:
           path: |
             ${{ env.SOURCE_DIR }}/dl
             ${{ env.CCACHE_DIR }}
-          key: xr1710g-${{ runner.os }}-${{ inputs.openwrt_ref || 'xr1710g' }}-${{ hashFiles('.github/workflows/build-openwrt-xr1710g.yml') }}
+          key: xr1710g-${{ runner.os }}-${{ needs.check-upstream.outputs.safe_ref }}-${{ hashFiles('.github/workflows/build-openwrt-xr1710g.yml') }}
           restore-keys: |
-            xr1710g-${{ runner.os }}-${{ inputs.openwrt_ref || 'xr1710g' }}-
+            xr1710g-${{ runner.os }}-${{ needs.check-upstream.outputs.safe_ref }}-
             xr1710g-${{ runner.os }}-
 
       - name: Update and install feeds
@@ -174,8 +299,6 @@ jobs:
 
       - name: Write build config
         working-directory: ${{ env.SOURCE_DIR }}
-        env:
-          EXTRA_CONFIG: ${{ inputs.extra_config }}
         run: |
           set -eux
           profile="${TARGET_PROFILE}"
@@ -279,7 +402,7 @@ jobs:
           {
             echo "OpenWrt repo: ${OPENWRT_REPO}"
             echo "OpenWrt ref: ${OPENWRT_REF}"
-            echo "OpenWrt commit: $(git -C "${SOURCE_DIR}" rev-parse HEAD)"
+            echo "OpenWrt commit: ${OPENWRT_SOURCE_COMMIT}"
             echo "Target: ${TARGET}/${SUBTARGET}"
             echo "Profile: ${TARGET_PROFILE}"
             echo "Wireless country default: ${WIRELESS_COUNTRY_CODE}"
@@ -307,13 +430,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eux
-          safe_ref="$(printf '%s' "${OPENWRT_REF}" | tr '/[:space:]' '-')"
-          source_short="$(git -C "${SOURCE_DIR}" rev-parse --short=12 HEAD)"
-          tag="xr1710g-${safe_ref}-${source_short}"
+          tag="${RELEASE_TAG}"
           if gh release view "${tag}" >/dev/null 2>&1; then
             echo "Release ${tag} already exists; skipping duplicate release."
             exit 0
           fi
           gh release create "${tag}" artifacts/xr1710g/* \
-            --title "OpenWrt XR1710G ${OPENWRT_REF} ${source_short}" \
+            --title "OpenWrt XR1710G ${OPENWRT_REF} ${OPENWRT_SOURCE_SHORT}" \
             --notes-file artifacts/xr1710g/BUILDINFO.txt
