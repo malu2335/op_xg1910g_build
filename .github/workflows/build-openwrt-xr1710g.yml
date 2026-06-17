@@ -1,6 +1,11 @@
 name: Build OpenWrt XR1710G
 
 on:
+  schedule:
+    - cron: "17 */6 * * *"
+  repository_dispatch:
+    types:
+      - openwrt-updated
   push:
     branches:
       - main
@@ -38,7 +43,7 @@ on:
         description: Publish firmware files as a GitHub Release
         required: true
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: write
@@ -56,7 +61,7 @@ env:
   TARGET_PROFILE: ${{ inputs.target_profile || 'econet_xr1710g-ubi' }}
   WIRELESS_COUNTRY_CODE: ${{ inputs.wireless_country || 'CN' }}
   FIX_5G_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.fix_5g_channel) || 'true' }}
-  CREATE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.create_release) || 'false' }}
+  CREATE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.create_release) || 'true' }}
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_MAXSIZE: 2G
 
@@ -119,6 +124,12 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+      - name: Add OpenClash package
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/vernesong/OpenClash.git package/OpenClash
+
       - name: Add XR1710G first-boot defaults
         working-directory: ${{ env.SOURCE_DIR }}
         run: |
@@ -173,22 +184,35 @@ jobs:
           CONFIG_TARGET_${TARGET}=y
           CONFIG_TARGET_${TARGET}_${SUBTARGET}=y
           CONFIG_TARGET_${TARGET}_${SUBTARGET}_DEVICE_${profile}=y
+          CONFIG_ALL=y
+          CONFIG_ALL_KMODS=y
+          CONFIG_ALL_NONSHARED=y
+          CONFIG_BUILDBOT=y
           CONFIG_CCACHE=y
           CONFIG_DEVEL=y
+          CONFIG_IB=y
+          CONFIG_JSON_OVERVIEW_IMAGE_INFO=y
           CONFIG_KERNEL_BUILD_DOMAIN="github-actions"
           CONFIG_KERNEL_BUILD_USER="builder"
+          CONFIG_SDK=y
+          # CONFIG_PACKAGE_dnsmasq is not set
+          CONFIG_PACKAGE_bash=y
+          CONFIG_PACKAGE_ca-bundle=y
           CONFIG_PACKAGE_irqbalance=y
           CONFIG_PACKAGE_jq=y
           CONFIG_PACKAGE_curl=y
           CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-app-openclash=y
           CONFIG_PACKAGE_luci-app-firewall=y
           CONFIG_PACKAGE_luci-app-package-manager=y
           CONFIG_PACKAGE_luci-app-ttyd=y
           CONFIG_PACKAGE_luci-app-irqbalance=y
+          CONFIG_PACKAGE_luci-compat=y
           CONFIG_PACKAGE_luci-proto-ipv6=y
           CONFIG_PACKAGE_luci-proto-ppp=y
           CONFIG_PACKAGE_luci-theme-bootstrap=y
           CONFIG_PACKAGE_nano=y
+          CONFIG_PACKAGE_dnsmasq-full=y
           CONFIG_PACKAGE_ttyd=y
           # CONFIG_TARGET_ROOTFS_INITRAMFS is not set
           EOF
@@ -223,7 +247,7 @@ jobs:
         run: |
           set -o pipefail
           nproc
-          make -j"$(nproc)" || make -j1 V=s
+          make -j"$(nproc)" IGNORE_ERRORS=m || make -j1 V=s IGNORE_ERRORS=m
 
       - name: Collect firmware artifacts
         id: collect
@@ -238,6 +262,13 @@ jobs:
           cp -a "${bindir}"/*.bin "${outdir}/" 2>/dev/null || true
           cp -a "${bindir}"/profiles.json "${outdir}/" 2>/dev/null || true
           cp -a "${bindir}"/sha256sums "${outdir}/upstream-sha256sums" 2>/dev/null || true
+
+          tar_paths=()
+          [ -d "${SOURCE_DIR}/bin/packages" ] && tar_paths+=(packages)
+          [ -d "${bindir}/packages" ] && tar_paths+=("targets/${TARGET}/${SUBTARGET}/packages")
+          if [ "${#tar_paths[@]}" -gt 0 ]; then
+            (cd "${SOURCE_DIR}/bin" && tar -I 'zstd -T0 -19' -cf "${GITHUB_WORKSPACE}/${outdir}/openwrt-xr1710g-packages.tar.zst" "${tar_paths[@]}")
+          fi
 
           find "${outdir}" -maxdepth 1 -name '*sysupgrade.itb' -type f | grep -q . || {
             echo "No XR1710G sysupgrade.itb artifact was found in ${bindir}"
@@ -277,7 +308,12 @@ jobs:
         run: |
           set -eux
           safe_ref="$(printf '%s' "${OPENWRT_REF}" | tr '/[:space:]' '-')"
-          tag="xr1710g-${safe_ref}-${{ github.run_number }}"
+          source_short="$(git -C "${SOURCE_DIR}" rev-parse --short=12 HEAD)"
+          tag="xr1710g-${safe_ref}-${source_short}"
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists; skipping duplicate release."
+            exit 0
+          fi
           gh release create "${tag}" artifacts/xr1710g/* \
-            --title "OpenWrt XR1710G ${OPENWRT_REF} #${{ github.run_number }}" \
+            --title "OpenWrt XR1710G ${OPENWRT_REF} ${source_short}" \
             --notes-file artifacts/xr1710g/BUILDINFO.txt

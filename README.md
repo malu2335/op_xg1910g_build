@@ -17,11 +17,15 @@ The default build source is:
 4. Run `Build OpenWrt XR1710G` manually later if you want to override inputs.
 5. Download the `openwrt-xr1710g-*` artifact after the build completes.
 
+The workflow also runs on a six-hour schedule so it can pick up updates from the configured OpenWrt branch. Successful runs publish a GitHub Release containing firmware files and a `openwrt-xr1710g-packages.tar.zst` package archive.
+
 The expected system firmware artifact is the `*-sysupgrade.itb` file. For XR1710G HTTP Recovery, upload that `*-sysupgrade.itb` file.
 
 ## Notes
 
 - Do the OpenWrt source checkout and build on the Ubuntu runner. Avoid cloning the full OpenWrt tree on macOS case-insensitive filesystems.
+- The workflow enables OpenWrt buildbot-style package output with `CONFIG_ALL`, `CONFIG_ALL_KMODS`, and `CONFIG_ALL_NONSHARED`.
+- OpenClash is added from <https://github.com/vernesong/OpenClash> and selected into the firmware as `luci-app-openclash`.
 - The workflow adds a first-boot wireless defaults script that sets a valid country code, defaulting to `CN`.
 - The 5 GHz radio is optionally pinned to channel `36` on first boot to avoid DFS startup delays and client discovery issues.
 - U-Boot chainloader images are separate from this system firmware workflow. Do not flash raw U-Boot artifacts as XR1710G system firmware.
