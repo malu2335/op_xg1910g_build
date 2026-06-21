@@ -319,6 +319,38 @@ jobs:
           grep -q -- '-kmod-pwm-airoha' "${image_file}"
           grep -q 'airoha-en7581-mt7996-npu-firmware' "${image_file}"
 
+      - name: Drop XR1710G AFE DTS override when base DTS lacks AFE
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: |
+          set -eux
+          dts_file="target/linux/airoha/dts/an7581-xr1710g-ubi.dts"
+          test -f "${dts_file}"
+          if grep -Rqs '^[[:space:]]*afe:' target/linux/airoha/dts; then
+            echo "Base DTS defines afe label; keeping XR1710G AFE override."
+            exit 0
+          fi
+
+          if grep -q '^&afe[[:space:]]*{' "${dts_file}"; then
+            awk '
+              /^&afe[[:space:]]*\{/ {
+                skip = 1
+                depth = 1
+                next
+              }
+              skip {
+                depth += gsub(/\{/, "{")
+                depth -= gsub(/\}/, "}")
+                if (depth <= 0 && $0 ~ /};/) {
+                  skip = 0
+                }
+                next
+              }
+              { print }
+            ' "${dts_file}" > "${dts_file}.tmp"
+            mv "${dts_file}.tmp" "${dts_file}"
+          fi
+          ! grep -q '^&afe[[:space:]]*{' "${dts_file}"
+
       - name: Add Airoha offload sk_buff kernel patch
         working-directory: ${{ env.SOURCE_DIR }}
         run: |
