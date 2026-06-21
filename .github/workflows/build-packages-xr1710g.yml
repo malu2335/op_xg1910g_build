@@ -253,17 +253,21 @@ jobs:
 
           grep -q '^define Device/econet_xr1710g-ubi$' target/linux/airoha/image/an7581.mk
 
-      - name: Fix Airoha offload sk_buff declaration
+      - name: Add Airoha offload sk_buff kernel patch
         working-directory: ${{ env.SOURCE_DIR }}
         run: |
           set -eux
-          header="target/linux/airoha/files/include/linux/soc/airoha/airoha_offload.h"
-          if [ ! -f "${header}" ]; then
-            echo "Airoha offload header not found; skipping."
-            exit 0
-          fi
-          perl -0pi -e 's/(^#include [^\n]*\n)/#include <linux\/skbuff.h>\n$1/m unless /#include <linux\/skbuff\.h>/' "${header}"
-          grep -n -A3 -B3 'skbuff.h' "${header}"
+          patch_file="target/linux/airoha/patches-6.6/999-fix-airoha-offload-skbuff-include.patch"
+          mkdir -p "$(dirname "${patch_file}")"
+          cat > "${patch_file}" <<'EOF'
+          --- a/include/linux/soc/airoha/airoha_offload.h
+          +++ b/include/linux/soc/airoha/airoha_offload.h
+          @@ -9,2 +9,3 @@
+           #include <linux/spinlock.h>
+          +#include <linux/skbuff.h>
+           #include <linux/workqueue.h>
+          EOF
+          grep -n -A8 -B2 'skbuff.h' "${patch_file}"
 
       - name: Restore downloads and ccache
         uses: actions/cache@v4
@@ -422,6 +426,14 @@ jobs:
               exit 1
             }
           done
+
+      - name: Compile package kernel prerequisites
+        if: ${{ matrix.shard == 0 }}
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: |
+          set -o pipefail
+          nproc
+          make -j"$(nproc)" target/linux/compile || make -j1 V=s target/linux/compile
 
       - name: Compile fallback tools and toolchain
         if: ${{ steps.toolchain-cache.outputs.cache-hit != 'true' && steps.toolchain-cache.outputs.cache-matched-key == '' && steps.released-toolchain.outputs.release_toolchain_hit != 'true' }}
